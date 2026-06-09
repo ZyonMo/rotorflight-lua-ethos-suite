@@ -18,6 +18,9 @@ local defaultThemeId = 0
 
 local enableWakeup = false
 local prevConnectedState = nil
+local globalUseSameOverride = nil
+local modelUseSameOverride = nil
+local fieldIds = {}
 
 local function clearTable(tbl)
     if type(tbl) ~= "table" then return end
@@ -105,6 +108,73 @@ local function getThemeByChoiceValue(choiceValue)
     return themeById[id]
 end
 
+local function getThemeFolderByChoiceValue(choiceValue, allowDisabled)
+    local theme = getThemeByChoiceValue(choiceValue)
+    if theme then return theme.source .. "/" .. theme.folder end
+    if allowDisabled then return "nil" end
+
+    theme = getThemeByChoiceValue(defaultThemeId)
+    if theme then return theme.source .. "/" .. theme.folder end
+    return nil
+end
+
+local function setThemeSetting(target, key, choiceValue, allowDisabled)
+    if type(target) ~= "table" then return end
+    local folder = getThemeFolderByChoiceValue(choiceValue, allowDisabled)
+    if folder then target[key] = folder end
+end
+
+local function copyPreflightThemeToAllPhases(target, allowDisabled)
+    if type(target) ~= "table" then return end
+    local choiceValue = getThemeIdFromFolder(target.theme_preflight, allowDisabled)
+    local folder = getThemeFolderByChoiceValue(choiceValue, allowDisabled)
+    if folder then
+        target.theme_preflight = folder
+        target.theme_inflight = folder
+        target.theme_postflight = folder
+    end
+end
+
+local function settingsUseSameTheme(target, allowDisabled)
+    if type(target) ~= "table" then return true end
+    local preflight = getThemeIdFromFolder(target.theme_preflight, allowDisabled)
+    return preflight == getThemeIdFromFolder(target.theme_inflight, allowDisabled) and preflight == getThemeIdFromFolder(target.theme_postflight, allowDisabled)
+end
+
+local function globalUseSameTheme()
+    if globalUseSameOverride ~= nil then return globalUseSameOverride end
+    return settingsUseSameTheme(settings, false)
+end
+
+local function modelUseSameTheme()
+    if modelUseSameOverride ~= nil then return modelUseSameOverride end
+    return settingsUseSameTheme(settings_model, true)
+end
+
+local function modelThemeFieldsEnabled()
+    return (rfsuite.session.isConnected and rfsuite.session.mcu_id) and true or false
+end
+
+local function enableField(fieldId, enabled)
+    local field = fieldId and rfsuite.app.formFields[fieldId] or nil
+    if field and field.enable then field:enable(enabled) end
+end
+
+local function updateGlobalPhaseFields()
+    local useSame = globalUseSameTheme()
+    enableField(fieldIds.global_inflight, not useSame)
+    enableField(fieldIds.global_postflight, not useSame)
+end
+
+local function updateModelPhaseFields()
+    local enabled = modelThemeFieldsEnabled()
+    local useSame = modelUseSameTheme()
+    enableField(fieldIds.model_use_same, enabled)
+    enableField(fieldIds.model_preflight, enabled)
+    enableField(fieldIds.model_inflight, enabled and not useSame)
+    enableField(fieldIds.model_postflight, enabled and not useSame)
+end
+
 local function openPage(opts)
 
     local pageIdx = opts.idx
@@ -124,9 +194,33 @@ local function openPage(opts)
     local formFieldCount = 0
 
     generateThemeList()
+    clearTable(fieldIds)
+    if settings.use_same_theme ~= nil then
+        globalUseSameOverride = settings.use_same_theme == true or settings.use_same_theme == "true"
+    else
+        globalUseSameOverride = nil
+    end
+    if type(settings_model) == "table" and settings_model.use_same_theme ~= nil then
+        modelUseSameOverride = settings_model.use_same_theme == true or settings_model.use_same_theme == "true"
+    else
+        modelUseSameOverride = nil
+    end
 
     local global_panel = form.addExpansionPanel("@i18n(app.modules.settings.dashboard_theme_panel_global)@")
     global_panel:open(true)
+
+    formFieldCount = formFieldCount + 1
+    rfsuite.app.formLineCnt = rfsuite.app.formLineCnt + 1
+    rfsuite.app.formLines[rfsuite.app.formLineCnt] = global_panel:addLine("@i18n(app.modules.settings.dashboard_theme_use_same)@")
+    rfsuite.app.formFields[formFieldCount] = form.addBooleanField(rfsuite.app.formLines[rfsuite.app.formLineCnt], nil, function()
+        return globalUseSameTheme()
+    end, function(newValue)
+        globalUseSameOverride = newValue == true
+        settings.use_same_theme = globalUseSameOverride
+        if globalUseSameOverride then copyPreflightThemeToAllPhases(settings, false) end
+        updateGlobalPhaseFields()
+    end)
+    fieldIds.global_use_same = formFieldCount
 
     formFieldCount = formFieldCount + 1
     rfsuite.app.formLineCnt = rfsuite.app.formLineCnt + 1
@@ -140,10 +234,12 @@ local function openPage(opts)
         return defaultThemeId
     end, function(newValue)
         if rfsuite.preferences and rfsuite.preferences.dashboard then
-            local theme = getThemeByChoiceValue(newValue)
-            if theme then settings.theme_preflight = theme.source .. "/" .. theme.folder end
+            local useSame = globalUseSameTheme()
+            setThemeSetting(settings, "theme_preflight", newValue, false)
+            if useSame then copyPreflightThemeToAllPhases(settings, false) end
         end
     end)
+    fieldIds.global_preflight = formFieldCount
 
     formFieldCount = formFieldCount + 1
     rfsuite.app.formLineCnt = rfsuite.app.formLineCnt + 1
@@ -157,10 +253,10 @@ local function openPage(opts)
         return defaultThemeId
     end, function(newValue)
         if rfsuite.preferences and rfsuite.preferences.dashboard then
-            local theme = getThemeByChoiceValue(newValue)
-            if theme then settings.theme_inflight = theme.source .. "/" .. theme.folder end
+            setThemeSetting(settings, "theme_inflight", newValue, false)
         end
     end)
+    fieldIds.global_inflight = formFieldCount
 
     formFieldCount = formFieldCount + 1
     rfsuite.app.formLineCnt = rfsuite.app.formLineCnt + 1
@@ -174,13 +270,27 @@ local function openPage(opts)
         return defaultThemeId
     end, function(newValue)
         if rfsuite.preferences and rfsuite.preferences.dashboard then
-            local theme = getThemeByChoiceValue(newValue)
-            if theme then settings.theme_postflight = theme.source .. "/" .. theme.folder end
+            setThemeSetting(settings, "theme_postflight", newValue, false)
         end
     end)
+    fieldIds.global_postflight = formFieldCount
+    updateGlobalPhaseFields()
 
     local model_panel = form.addExpansionPanel("@i18n(app.modules.settings.dashboard_theme_panel_model)@")
     model_panel:open(false)
+
+    formFieldCount = formFieldCount + 1
+    rfsuite.app.formLineCnt = rfsuite.app.formLineCnt + 1
+    rfsuite.app.formLines[rfsuite.app.formLineCnt] = model_panel:addLine("@i18n(app.modules.settings.dashboard_theme_use_same)@")
+    rfsuite.app.formFields[formFieldCount] = form.addBooleanField(rfsuite.app.formLines[rfsuite.app.formLineCnt], nil, function()
+        return modelUseSameTheme()
+    end, function(newValue)
+        modelUseSameOverride = newValue == true
+        if type(settings_model) == "table" then settings_model.use_same_theme = modelUseSameOverride end
+        if modelUseSameOverride then copyPreflightThemeToAllPhases(settings_model, true) end
+        updateModelPhaseFields()
+    end)
+    fieldIds.model_use_same = formFieldCount
 
     formFieldCount = formFieldCount + 1
     rfsuite.app.formLineCnt = rfsuite.app.formLineCnt + 1
@@ -194,15 +304,12 @@ local function openPage(opts)
         return 0
     end, function(newValue)
         if type(settings_model) == "table" then
-            local theme = getThemeByChoiceValue(newValue)
-            if theme then
-                settings_model.theme_preflight = theme.source .. "/" .. theme.folder
-            else
-                settings_model.theme_preflight = "nil"
-            end
+            local useSame = modelUseSameTheme()
+            setThemeSetting(settings_model, "theme_preflight", newValue, true)
+            if useSame then copyPreflightThemeToAllPhases(settings_model, true) end
         end
     end)
-    rfsuite.app.formFields[formFieldCount]:enable(false)
+    fieldIds.model_preflight = formFieldCount
 
     formFieldCount = formFieldCount + 1
     rfsuite.app.formLineCnt = rfsuite.app.formLineCnt + 1
@@ -216,15 +323,10 @@ local function openPage(opts)
         return 0
     end, function(newValue)
         if type(settings_model) == "table" then
-            local theme = getThemeByChoiceValue(newValue)
-            if theme then
-                settings_model.theme_inflight = theme.source .. "/" .. theme.folder
-            else
-                settings_model.theme_inflight = "nil"
-            end
+            setThemeSetting(settings_model, "theme_inflight", newValue, true)
         end
     end)
-    rfsuite.app.formFields[formFieldCount]:enable(false)
+    fieldIds.model_inflight = formFieldCount
 
     formFieldCount = formFieldCount + 1
     rfsuite.app.formLineCnt = rfsuite.app.formLineCnt + 1
@@ -238,15 +340,11 @@ local function openPage(opts)
         return 0
     end, function(newValue)
         if type(settings_model) == "table" then
-            local theme = getThemeByChoiceValue(newValue)
-            if theme then
-                settings_model.theme_postflight = theme.source .. "/" .. theme.folder
-            else
-                settings_model.theme_postflight = "nil"
-            end
+            setThemeSetting(settings_model, "theme_postflight", newValue, true)
         end
     end)
-    rfsuite.app.formFields[formFieldCount]:enable(false)
+    fieldIds.model_postflight = formFieldCount
+    updateModelPhaseFields()
 
 end
 
@@ -260,6 +358,9 @@ local function onSaveMenu()
     local function doSave()
         local msg = "@i18n(app.modules.profile_select.save_prompt_local)@"
         rfsuite.app.ui.progressDisplaySave(msg:gsub("%?$", "."))
+
+        if globalUseSameTheme() then copyPreflightThemeToAllPhases(settings, false) end
+        if modelThemeFieldsEnabled() and modelUseSameTheme() then copyPreflightThemeToAllPhases(settings_model, true) end
 
         for key, value in pairs(settings) do rfsuite.preferences.dashboard[key] = value end
         rfsuite.ini.save_ini_file("SCRIPTS:/" .. rfsuite.config.preferences .. "/preferences.ini", rfsuite.preferences)
@@ -308,16 +409,20 @@ local function wakeup()
 
         if currState then
             generateThemeList()
-            for i = 4, 6 do
-                local f = rfsuite.app.formFields[i]
-                if f and f.values then f:values(formattedThemesModel) end
+            local f = rfsuite.app.formFields[fieldIds.model_preflight]
+            if f and f.values then f:values(formattedThemesModel) end
+            f = rfsuite.app.formFields[fieldIds.model_inflight]
+            if f and f.values then f:values(formattedThemesModel) end
+            f = rfsuite.app.formFields[fieldIds.model_postflight]
+            if f and f.values then f:values(formattedThemesModel) end
+            if type(settings_model) == "table" and settings_model.use_same_theme ~= nil then
+                modelUseSameOverride = settings_model.use_same_theme == true or settings_model.use_same_theme == "true"
+            else
+                modelUseSameOverride = nil
             end
         end
 
-        for i = 4, 6 do
-            local f = rfsuite.app.formFields[i]
-            if f and f.enable then f:enable(currState) end
-        end
+        updateModelPhaseFields()
 
         prevConnectedState = currState
     end

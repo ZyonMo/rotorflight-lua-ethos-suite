@@ -11738,6 +11738,13 @@
           "max_length": 8,
           "reverse_text": false
         },
+        "dashboard_theme_use_same": {
+          "english": "Use same theme",
+          "translation": "Use same theme",
+          "needs_translation": true,
+          "reverse_text": false,
+          "max_length": 14
+        },
         "dashboard_theme_postflight": {
           "english": "Postflight Theme",
           "translation": "Tema po letu",
@@ -12143,6 +12150,13 @@
           "needs_translation": false,
           "max_length": 5,
           "reverse_text": false
+        },
+        "txt_debugmalloc": {
+          "english": "Log Memory Allocation",
+          "translation": "Log Memory Allocation",
+          "needs_translation": true,
+          "reverse_text": false,
+          "max_length": 12
         },
         "txt_developer": {
           "english": "Developer",
